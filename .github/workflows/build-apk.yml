@@ -6,178 +6,152 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build Earnly Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '20'
 
       - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
-
-      - name: Check Java version
-        run: |
-          java -version
-          javac -version
+          java-version: '21'
 
       - name: Find HTML file
+        shell: bash
         run: |
-          HTML_FILE=$(find . -maxdepth 1 -type f -name "*.html" | head -n 1)
-
+          set -e
+          HTML_FILE="$(find . -maxdepth 1 -type f -iname '*.html' | head -n 1)"
           if [ -z "$HTML_FILE" ]; then
-            echo "ERROR: No HTML file found."
+            echo "ERROR: No HTML file found in repository root."
             exit 1
           fi
+          echo "HTML_FILE=$HTML_FILE" >> "$GITHUB_ENV"
+          echo "Using: $HTML_FILE"
 
-          echo "Found HTML file: $HTML_FILE"
-          cp "$HTML_FILE" index.html
-
-      - name: Check icon
+      - name: Create web directory
+        shell: bash
         run: |
-          if [ ! -f "icon.png" ]; then
-            echo "ERROR: icon.png not found."
-            exit 1
-          fi
+          set -e
+          rm -rf web
+          mkdir -p web
+          cp "$HTML_FILE" web/index.html
 
-          echo "icon.png found."
+          if [ -f icon.png ]; then
+            cp icon.png web/icon.png
+          fi
 
       - name: Create package.json
+        shell: bash
         run: |
           cat > package.json <<'EOF'
           {
             "name": "earnly",
             "version": "1.0.0",
-            "private": true
-          }
-          EOF
-
-      - name: Install Capacitor
-        run: |
-          npm install @capacitor/core@latest
-          npm install @capacitor/cli@latest
-          npm install @capacitor/android@latest
-          npm install @capacitor/assets@latest
-
-      - name: Create web directory
-        run: |
-          mkdir -p www
-          cp index.html www/index.html
-
-          if [ -f "icon.png" ]; then
-            cp icon.png www/icon.png
-          fi
-
-      - name: Create Capacitor configuration
-        run: |
-          cat > capacitor.config.json <<'EOF'
-          {
-            "appId": "com.earnly.app",
-            "appName": "Earnly",
-            "webDir": "www",
-            "server": {
-              "androidScheme": "https"
+            "private": true,
+            "scripts": {
+              "build": "echo Web app ready"
+            },
+            "dependencies": {
+              "@capacitor/core": "7.4.4",
+              "@capacitor/android": "7.4.4",
+              "@capacitor/cli": "7.4.4"
             }
           }
           EOF
 
-      - name: Create resources
+      - name: Install Capacitor
+        run: npm install
+
+      - name: Create Capacitor project
+        shell: bash
         run: |
-          mkdir -p resources
+          set -e
 
-          cp icon.png resources/icon.png
+          rm -rf android
 
-          if [ -f "splash.png" ]; then
-            cp splash.png resources/splash.png
-          else
-            cp icon.png resources/splash.png
-          fi
-
-      - name: Add Android platform
-        run: |
+          npx cap init Earnly com.earnly.app --web-dir web
           npx cap add android
 
-      - name: Generate Android icons and splash
+          # Make sure the Android application name is Earnly.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/src/main/res/values/strings.xml")
+          if p.exists():
+              s = p.read_text()
+              s = s.replace("app_name\">App</string>", "app_name\">Earnly</string>")
+              p.write_text(s)
+          PY
+
+      - name: Prepare icon and splash assets
+        shell: bash
         run: |
-          npx capacitor-assets generate --android
+          set -e
+
+          if [ -f icon.png ]; then
+            mkdir -p resources
+            cp icon.png resources/icon.png
+            cp icon.png resources/splash.png
+
+            # Generate Android launcher icons and splash resources.
+            npm install --no-save @capacitor/assets@3.0.5
+            npx capacitor-assets generate \
+              --android \
+              --iconBackgroundColor '#06101C' \
+              --splashBackgroundColor '#06101C'
+          else
+            echo "icon.png not found; using Capacitor default resources."
+          fi
 
       - name: Sync Capacitor
-        run: |
-          npx cap sync android
+        run: npx cap sync android
 
-      - name: Set app name
+      - name: Set Android app name
+        shell: bash
         run: |
+          set -e
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("android/app/src/main/res/values/strings.xml")
-
-          if p.exists():
-              text = p.read_text()
-
-              text = text.replace(
-                  '<string name="app_name">Capacitor</string>',
-                  '<string name="app_name">Earnly</string>'
+          strings = Path("android/app/src/main/res/values/strings.xml")
+          if strings.exists():
+              s = strings.read_text()
+              import re
+              s = re.sub(
+                  r'<string name="app_name">.*?</string>',
+                  '<string name="app_name">Earnly</string>',
+                  s
               )
+              strings.write_text(s)
 
-              p.write_text(text)
+          gradle = Path("android/gradle.properties")
+          with gradle.open("a") as f:
+              f.write("\norg.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\n")
+              f.write("android.useAndroidX=true\n")
           PY
 
-      - name: Build Earnly APK
+      - name: Build debug APK
         working-directory: android
-        run: |
-          chmod +x gradlew
-
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Prepare APK
+        shell: bash
         run: |
+          set -e
           mkdir -p output
-
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-             output/Earnly.apk
-
-          ls -lh output/Earnly.apk
-
-      - name: Upload Earnly APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Earnly-APK
-          path: output/Earnly.apk
-          if-no-files-found: error          p = Path("android/app/src/main/res/values/strings.xml")
-
-          if p.exists():
-              text = p.read_text()
-              text = text.replace(
-                  '<string name="app_name">Capacitor</string>',
-                  '<string name="app_name">Earnly</string>'
-              )
-              p.write_text(text)
-          PY
-
-      - name: Build APK
-        working-directory: android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
-
-      - name: Prepare APK
-        run: |
-          mkdir -p output
-
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-             output/Earnly.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk output/Earnly.apk
 
       - name: Upload Earnly APK
         uses: actions/upload-artifact@v4
