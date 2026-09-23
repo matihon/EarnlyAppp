@@ -17,8 +17,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: 22
 
       - name: Find HTML file
         run: |
@@ -29,7 +28,7 @@ jobs:
             exit 1
           fi
 
-          echo "Found HTML: $HTML_FILE"
+          echo "Found HTML file: $HTML_FILE"
           cp "$HTML_FILE" index.html
 
       - name: Check icon
@@ -39,7 +38,6 @@ jobs:
             exit 1
           fi
 
-          file icon.png
           echo "icon.png found."
 
       - name: Create package.json
@@ -48,26 +46,22 @@ jobs:
           {
             "name": "earnly",
             "version": "1.0.0",
-            "private": true,
-            "scripts": {
-              "build": "echo Build complete"
-            }
+            "private": true
           }
           EOF
 
       - name: Install Capacitor
         run: |
-          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest
+          npm install @capacitor/core@latest
+          npm install @capacitor/cli@latest
+          npm install @capacitor/android@latest
           npm install @capacitor/assets@latest
 
       - name: Create web directory
         run: |
           mkdir -p www
-          cp index.html www/index.html
 
-          if [ -d "assets" ]; then
-            cp -r assets www/
-          fi
+          cp index.html www/index.html
 
           if [ -f "icon.png" ]; then
             cp icon.png www/icon.png
@@ -80,25 +74,26 @@ jobs:
             "appId": "com.earnly.app",
             "appName": "Earnly",
             "webDir": "www",
-            "bundledWebRuntime": false,
             "server": {
               "androidScheme": "https"
             }
           }
           EOF
 
-      - name: Add Android platform
-        run: |
-          npx cap add android
-
-      - name: Prepare app icon
+      - name: Create resources
         run: |
           mkdir -p resources
-
           cp icon.png resources/icon.png
 
-          # Create a splash image from the Earnly icon
-          cp icon.png resources/splash.png
+          if [ -f "splash.png" ]; then
+            cp splash.png resources/splash.png
+          else
+            cp icon.png resources/splash.png
+          fi
+
+      - name: Add Android
+        run: |
+          npx cap add android
 
       - name: Generate Android icons and splash
         run: |
@@ -108,20 +103,32 @@ jobs:
         run: |
           npx cap sync android
 
-      - name: Set Android app name
+      - name: Set app name
         run: |
-          sed -i 's/app_name">[^<]*/app_name">Earnly/' \
-            android/app/src/main/res/values/strings.xml || true
+          python3 - <<'PY'
+          from pathlib import Path
 
-      - name: Build debug APK
+          p = Path("android/app/src/main/res/values/strings.xml")
+
+          if p.exists():
+              text = p.read_text()
+              text = text.replace(
+                  '<string name="app_name">Capacitor</string>',
+                  '<string name="app_name">Earnly</string>'
+              )
+              p.write_text(text)
+          PY
+
+      - name: Build APK
         working-directory: android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Rename APK
+      - name: Prepare APK
         run: |
           mkdir -p output
+
           cp android/app/build/outputs/apk/debug/app-debug.apk \
              output/Earnly.apk
 
