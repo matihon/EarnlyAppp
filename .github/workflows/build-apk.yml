@@ -1,0 +1,133 @@
+name: Build Earnly APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Find HTML file
+        run: |
+          HTML_FILE=$(find . -maxdepth 1 -type f -name "*.html" | head -n 1)
+
+          if [ -z "$HTML_FILE" ]; then
+            echo "ERROR: No HTML file found."
+            exit 1
+          fi
+
+          echo "Found HTML: $HTML_FILE"
+          cp "$HTML_FILE" index.html
+
+      - name: Check icon
+        run: |
+          if [ ! -f "icon.png" ]; then
+            echo "ERROR: icon.png not found."
+            exit 1
+          fi
+
+          file icon.png
+          echo "icon.png found."
+
+      - name: Create package.json
+        run: |
+          cat > package.json <<'EOF'
+          {
+            "name": "earnly",
+            "version": "1.0.0",
+            "private": true,
+            "scripts": {
+              "build": "echo Build complete"
+            }
+          }
+          EOF
+
+      - name: Install Capacitor
+        run: |
+          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest
+          npm install @capacitor/assets@latest
+
+      - name: Create web directory
+        run: |
+          mkdir -p www
+          cp index.html www/index.html
+
+          if [ -d "assets" ]; then
+            cp -r assets www/
+          fi
+
+          if [ -f "icon.png" ]; then
+            cp icon.png www/icon.png
+          fi
+
+      - name: Create Capacitor configuration
+        run: |
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.earnly.app",
+            "appName": "Earnly",
+            "webDir": "www",
+            "bundledWebRuntime": false,
+            "server": {
+              "androidScheme": "https"
+            }
+          }
+          EOF
+
+      - name: Add Android platform
+        run: |
+          npx cap add android
+
+      - name: Prepare app icon
+        run: |
+          mkdir -p resources
+
+          cp icon.png resources/icon.png
+
+          # Create a splash image from the Earnly icon
+          cp icon.png resources/splash.png
+
+      - name: Generate Android icons and splash
+        run: |
+          npx capacitor-assets generate --android
+
+      - name: Sync Capacitor
+        run: |
+          npx cap sync android
+
+      - name: Set Android app name
+        run: |
+          sed -i 's/app_name">[^<]*/app_name">Earnly/' \
+            android/app/src/main/res/values/strings.xml || true
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: |
+          mkdir -p output
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+             output/Earnly.apk
+
+      - name: Upload Earnly APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Earnly-APK
+          path: output/Earnly.apk
+          if-no-files-found: error
